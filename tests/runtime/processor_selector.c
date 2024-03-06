@@ -69,7 +69,7 @@ static int get_output_num()
 }
 
 #ifdef FLB_HAVE_METRICS
-void flb_test_selector_regex(void)
+void flb_test_selector_regex_include(void)
 {
     int ret;
     flb_ctx_t *ctx;
@@ -79,8 +79,20 @@ void flb_test_selector_regex(void)
     struct flb_processor_unit *pu;
     struct cfl_variant var = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "storage",
+        .data.as_string = "/storage/",
     };
+    struct cfl_variant action = {
+        .type = CFL_VARIANT_STRING,
+        .data.as_string = "include",
+    };
+    int got;
+    int n_metrics = 12;
+    int not_used = 0;
+    struct flb_lib_out_cb cb_data;
+
+    /* Prepare output callback with expected result */
+    cb_data.cb = cb_count_metrics_msgpack;
+    cb_data.data = &not_used;
 
     ctx = flb_create();
     flb_service_set(ctx,
@@ -93,7 +105,9 @@ void flb_test_selector_regex(void)
 
     pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
     TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var);
+    ret = flb_processor_unit_set_property(pu, "metric_name", &var);
+    TEST_CHECK(ret == 0);
+    ret = flb_processor_unit_set_property(pu, "action", &action);
     TEST_CHECK(ret == 0);
 
 
@@ -111,20 +125,27 @@ void flb_test_selector_regex(void)
     ret = flb_input_set_processor(ctx, in_ffd, proc);
     TEST_CHECK(ret == 0);
 
-    out_ffd = flb_output(ctx, (char *) "stdout", NULL);
+    out_ffd = flb_output(ctx, (char *) "lib", &cb_data);
     TEST_CHECK(out_ffd >= 0);
     flb_output_set(ctx, out_ffd, "match", "test", NULL);
+
+    clear_output_num();
 
     ret = flb_start(ctx);
     TEST_CHECK(ret == 0);
 
     flb_time_msleep(1500); /* waiting flush */
 
+    got = get_output_num();
+    if (!TEST_CHECK(got >= n_metrics)) {
+        TEST_MSG("expect: %d >= %d, got: %d < %d", got, n_metrics, got, n_metrics);
+    }
+
     flb_stop(ctx);
     flb_destroy(ctx);
 }
 
-void flb_test_selector_exclude(void)
+void flb_test_selector_regex_exclude(void)
 {
     int ret;
     flb_ctx_t *ctx;
@@ -134,69 +155,14 @@ void flb_test_selector_exclude(void)
     struct flb_processor_unit *pu;
     struct cfl_variant var = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "input",
+        .data.as_string = "/input/",
     };
-
-    ctx = flb_create();
-    flb_service_set(ctx,
-                    "Flush", "0.200000000",
-                    "Grace", "2",
-                    NULL);
-
-    proc = flb_processor_create(ctx->config, "unit_test", NULL, 0);
-    TEST_CHECK(proc != NULL);
-
-    pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
-    TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var);
-    TEST_CHECK(ret == 0);
-
-
-    /* Input */
-    in_ffd = flb_input(ctx, (char *) "fluentbit_metrics", NULL);
-    TEST_CHECK(in_ffd >= 0);
-    ret = flb_input_set(ctx, in_ffd, "tag", "test", NULL);
-    TEST_CHECK(ret == 0);
-    ret = flb_input_set(ctx, in_ffd, "scrape_on_start", "true", NULL);
-    TEST_CHECK(ret == 0);
-    ret = flb_input_set(ctx, in_ffd, "scrape_interval", "1", NULL);
-    TEST_CHECK(ret == 0);
-
-    /* set up processor */
-    ret = flb_input_set_processor(ctx, in_ffd, proc);
-    TEST_CHECK(ret == 0);
-
-    out_ffd = flb_output(ctx, (char *) "stdout", NULL);
-    TEST_CHECK(out_ffd >= 0);
-    flb_output_set(ctx, out_ffd, "match", "test", NULL);
-
-    ret = flb_start(ctx);
-    TEST_CHECK(ret == 0);
-
-    flb_time_msleep(1500); /* waiting flush */
-
-    flb_stop(ctx);
-    flb_destroy(ctx);
-}
-
-void flb_test_selector_multi_regex(void)
-{
-    int ret;
-    flb_ctx_t *ctx;
-    int in_ffd;
-    int out_ffd;
-    struct flb_processor *proc;
-    struct flb_processor_unit *pu;
-    struct cfl_variant var1 = {
+    struct cfl_variant action = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "input",
-    };
-    struct cfl_variant var2 = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "busy",
+        .data.as_string = "exclude",
     };
     int got;
-    int n_metrics = 2;
+    int n_metrics = 19;
     int not_used = 0;
     struct flb_lib_out_cb cb_data;
 
@@ -215,9 +181,9 @@ void flb_test_selector_multi_regex(void)
 
     pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
     TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var1);
+    ret = flb_processor_unit_set_property(pu, "metric_name", &var);
     TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var2);
+    ret = flb_processor_unit_set_property(pu, "action", &action);
     TEST_CHECK(ret == 0);
 
 
@@ -255,7 +221,7 @@ void flb_test_selector_multi_regex(void)
     flb_destroy(ctx);
 }
 
-void flb_test_selector_multi_exclude(void)
+void flb_test_selector_prefix_include(void)
 {
     int ret;
     flb_ctx_t *ctx;
@@ -263,16 +229,20 @@ void flb_test_selector_multi_exclude(void)
     int out_ffd;
     struct flb_processor *proc;
     struct flb_processor_unit *pu;
-    struct cfl_variant var1 = {
+    struct cfl_variant var = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "input",
+        .data.as_string = "fluentbit_input",
     };
-    struct cfl_variant var2 = {
+    struct cfl_variant action = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "busy",
+        .data.as_string = "include",
+    };
+    struct cfl_variant op_type = {
+        .type = CFL_VARIANT_STRING,
+        .data.as_string = "prefix",
     };
     int got;
-    int n_metrics = 18;
+    int n_metrics = 11;
     int not_used = 0;
     struct flb_lib_out_cb cb_data;
 
@@ -291,9 +261,11 @@ void flb_test_selector_multi_exclude(void)
 
     pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
     TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var1);
+    ret = flb_processor_unit_set_property(pu, "metric_name", &var);
     TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var2);
+    ret = flb_processor_unit_set_property(pu, "action", &action);
+    TEST_CHECK(ret == 0);
+    ret = flb_processor_unit_set_property(pu, "operation_type", &op_type);
     TEST_CHECK(ret == 0);
 
 
@@ -331,91 +303,7 @@ void flb_test_selector_multi_exclude(void)
     flb_destroy(ctx);
 }
 
-void flb_test_selector_error_AND_regex_exclude(void)
-{
-    int ret;
-    struct flb_processor *proc;
-    struct flb_processor_unit *pu;
-    struct flb_config *config;
-    struct cfl_variant var1 = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "input",
-    };
-    struct cfl_variant var2 = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "busy",
-    };
-    struct cfl_variant op = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "AND",
-    };
-
-    flb_init_env();
-
-    config = flb_config_init();
-
-    proc = flb_processor_create(config, "unit_test", NULL, 0);
-    TEST_CHECK(proc != NULL);
-
-    pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
-    TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var1);
-    TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var2);
-    TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "logical_op", &op);
-    TEST_CHECK(ret == 0);
-
-    ret = flb_processor_init(proc);
-    TEST_CHECK(ret != 0);
-
-    flb_processor_destroy(proc);
-    flb_config_exit(config);
-}
-
-void flb_test_selector_error_OR_regex_exclude(void)
-{
-    int ret;
-    struct flb_processor *proc;
-    struct flb_processor_unit *pu;
-    struct flb_config *config;
-    struct cfl_variant var1 = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "input",
-    };
-    struct cfl_variant var2 = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "busy",
-    };
-    struct cfl_variant op = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "OR",
-    };
-
-    flb_init_env();
-
-    config = flb_config_init();
-
-    proc = flb_processor_create(config, "unit_test", NULL, 0);
-    TEST_CHECK(proc != NULL);
-
-    pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
-    TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var1);
-    TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var2);
-    TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "logical_op", &op);
-    TEST_CHECK(ret == 0);
-
-    ret = flb_processor_init(proc);
-    TEST_CHECK(ret != 0);
-
-    flb_processor_destroy(proc);
-    flb_config_exit(config);
-}
-
-void flb_test_selector_AND_regex(void)
+void flb_test_selector_prefix_exclude(void)
 {
     int ret;
     flb_ctx_t *ctx;
@@ -423,16 +311,20 @@ void flb_test_selector_AND_regex(void)
     int out_ffd;
     struct flb_processor *proc;
     struct flb_processor_unit *pu;
-    struct cfl_variant var1 = {
+    struct cfl_variant var = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "input",
+        .data.as_string = "fluentbit_storage",
     };
-    struct cfl_variant var2 = {
+    struct cfl_variant action = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "busy",
+        .data.as_string = "exclude",
+    };
+    struct cfl_variant op_type = {
+        .type = CFL_VARIANT_STRING,
+        .data.as_string = "prefix",
     };
     int got;
-    int n_metrics = 2;
+    int n_metrics = 25;
     int not_used = 0;
     struct flb_lib_out_cb cb_data;
 
@@ -451,9 +343,11 @@ void flb_test_selector_AND_regex(void)
 
     pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
     TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var1);
+    ret = flb_processor_unit_set_property(pu, "metric_name", &var);
     TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var2);
+    ret = flb_processor_unit_set_property(pu, "action", &action);
+    TEST_CHECK(ret == 0);
+    ret = flb_processor_unit_set_property(pu, "operation_type", &op_type);
     TEST_CHECK(ret == 0);
 
 
@@ -491,7 +385,7 @@ void flb_test_selector_AND_regex(void)
     flb_destroy(ctx);
 }
 
-void flb_test_selector_OR_regex(void)
+void flb_test_selector_substring_include(void)
 {
     int ret;
     flb_ctx_t *ctx;
@@ -499,20 +393,20 @@ void flb_test_selector_OR_regex(void)
     int out_ffd;
     struct flb_processor *proc;
     struct flb_processor_unit *pu;
-    struct cfl_variant var1 = {
+    struct cfl_variant var = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "chunk",
+        .data.as_string = "dropped",
     };
-    struct cfl_variant var2 = {
+    struct cfl_variant action = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "busy",
+        .data.as_string = "include",
     };
-    struct cfl_variant or = {
+    struct cfl_variant op_type = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "OR",
+        .data.as_string = "substring",
     };
     int got;
-    int n_metrics = 14;
+    int n_metrics = 1;
     int not_used = 0;
     struct flb_lib_out_cb cb_data;
 
@@ -531,11 +425,11 @@ void flb_test_selector_OR_regex(void)
 
     pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
     TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var1);
+    ret = flb_processor_unit_set_property(pu, "metric_name", &var);
     TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.regex", &var2);
+    ret = flb_processor_unit_set_property(pu, "action", &action);
     TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "logical_op", &or);
+    ret = flb_processor_unit_set_property(pu, "operation_type", &op_type);
     TEST_CHECK(ret == 0);
 
 
@@ -573,7 +467,7 @@ void flb_test_selector_OR_regex(void)
     flb_destroy(ctx);
 }
 
-void flb_test_selector_AND_exclude(void)
+void flb_test_selector_substring_exclude(void)
 {
     int ret;
     flb_ctx_t *ctx;
@@ -581,20 +475,20 @@ void flb_test_selector_AND_exclude(void)
     int out_ffd;
     struct flb_processor *proc;
     struct flb_processor_unit *pu;
-    struct cfl_variant var1 = {
+    struct cfl_variant var = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "filter",
+        .data.as_string = "connections",
     };
-    struct cfl_variant var2 = {
+    struct cfl_variant action = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "input",
+        .data.as_string = "exclude",
     };
-    struct cfl_variant and = {
+    struct cfl_variant op_type = {
         .type = CFL_VARIANT_STRING,
-        .data.as_string = "AND",
+        .data.as_string = "substring",
     };
     int got;
-    int n_metrics = 17;
+    int n_metrics = 28;
     int not_used = 0;
     struct flb_lib_out_cb cb_data;
 
@@ -613,11 +507,11 @@ void flb_test_selector_AND_exclude(void)
 
     pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
     TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var1);
+    ret = flb_processor_unit_set_property(pu, "metric_name", &var);
     TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var2);
+    ret = flb_processor_unit_set_property(pu, "action", &action);
     TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "logical_op", &and);
+    ret = flb_processor_unit_set_property(pu, "operation_type", &op_type);
     TEST_CHECK(ret == 0);
 
 
@@ -655,102 +549,17 @@ void flb_test_selector_AND_exclude(void)
     flb_destroy(ctx);
 }
 
-void flb_test_selector_OR_exclude(void)
-{
-    int ret;
-    flb_ctx_t *ctx;
-    int in_ffd;
-    int out_ffd;
-    struct flb_processor *proc;
-    struct flb_processor_unit *pu;
-    struct cfl_variant var1 = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "fluentbit",
-    };
-    struct cfl_variant var2 = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "storage",
-    };
-    struct cfl_variant or = {
-        .type = CFL_VARIANT_STRING,
-        .data.as_string = "OR",
-    };
-    int got;
-    int n_metrics = 15;
-    int not_used = 0;
-    struct flb_lib_out_cb cb_data;
-
-    /* Prepare output callback with expected result */
-    cb_data.cb = cb_count_metrics_msgpack;
-    cb_data.data = &not_used;
-
-    ctx = flb_create();
-    flb_service_set(ctx,
-                    "Flush", "0.200000000",
-                    "Grace", "2",
-                    NULL);
-
-    proc = flb_processor_create(ctx->config, "unit_test", NULL, 0);
-    TEST_CHECK(proc != NULL);
-
-    pu = flb_processor_unit_create(proc, FLB_PROCESSOR_METRICS, "selector");
-    TEST_CHECK(pu != NULL);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var1);
-    TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "metrics.exclude", &var2);
-    TEST_CHECK(ret == 0);
-    ret = flb_processor_unit_set_property(pu, "logical_op", &or);
-    TEST_CHECK(ret == 0);
-
-
-    /* Input */
-    in_ffd = flb_input(ctx, (char *) "fluentbit_metrics", NULL);
-    TEST_CHECK(in_ffd >= 0);
-    ret = flb_input_set(ctx, in_ffd, "tag", "test", NULL);
-    TEST_CHECK(ret == 0);
-    ret = flb_input_set(ctx, in_ffd, "scrape_on_start", "true", NULL);
-    TEST_CHECK(ret == 0);
-    ret = flb_input_set(ctx, in_ffd, "scrape_interval", "1", NULL);
-    TEST_CHECK(ret == 0);
-
-    /* set up processor */
-    ret = flb_input_set_processor(ctx, in_ffd, proc);
-    TEST_CHECK(ret == 0);
-
-    out_ffd = flb_output(ctx, (char *) "lib", &cb_data);
-    TEST_CHECK(out_ffd >= 0);
-    flb_output_set(ctx, out_ffd, "match", "test", NULL);
-
-    clear_output_num();
-
-    ret = flb_start(ctx);
-    TEST_CHECK(ret == 0);
-
-    flb_time_msleep(1500); /* waiting flush */
-
-    got = get_output_num();
-    if (!TEST_CHECK(got >= n_metrics)) {
-        TEST_MSG("expect: %d >= %d, got: %d < %d", got, n_metrics, got, n_metrics);
-    }
-
-    flb_stop(ctx);
-    flb_destroy(ctx);
-}
 #endif
 
 /* Test list */
 TEST_LIST = {
 #ifdef FLB_HAVE_METRICS
-    {"regex", flb_test_selector_regex},
-    {"exclude", flb_test_selector_exclude},
-    {"multi_regex", flb_test_selector_multi_regex},
-    {"multi_exclude", flb_test_selector_multi_exclude},
-    {"error_AND_regex_exclude", flb_test_selector_error_AND_regex_exclude},
-    {"error_OR_regex_exclude", flb_test_selector_error_OR_regex_exclude},
-    {"AND_regex", flb_test_selector_AND_regex},
-    {"OR_regex", flb_test_selector_OR_regex},
-    {"AND_exclude", flb_test_selector_AND_exclude},
-    {"OR_exclude", flb_test_selector_OR_exclude},
+    {"regex_include", flb_test_selector_regex_include},
+    {"regex_exclude", flb_test_selector_regex_exclude},
+    {"prefix_include", flb_test_selector_prefix_include},
+    {"prefix_exclude", flb_test_selector_prefix_exclude},
+    {"substring_include", flb_test_selector_substring_include},
+    {"substring_exclude", flb_test_selector_substring_exclude},
 #endif
     {NULL, NULL}
 };

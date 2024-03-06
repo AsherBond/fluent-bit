@@ -28,7 +28,7 @@
 
 /* rule types */
 #define SELECTOR_NO_RULE  0
-#define SELECTOR_REGEX    1
+#define SELECTOR_INCLUDE  1
 #define SELECTOR_EXCLUDE  2
 
 /* actions */
@@ -39,25 +39,25 @@
 #define SELECTOR_NOTOUCH   1
 #define SELECTOR_FAILURE   2
 
-enum _selector_logical_op{
-    SELECTOR_LOGICAL_OP_LEGACY,
-    SELECTOR_LOGICAL_OP_OR,
-    SELECTOR_LOGICAL_OP_AND
-} selector_logical_op;
+#define SELECTOR_OPERATION_REGEX     0
+#define SELECTOR_OPERATION_PREFIX    1
+#define SELECTOR_OPERATION_SUBSTRING 2
+
+/* context */
+#define SELECTOR_CONTEXT_FQNAME 0
+#define SELECTOR_CONTEXT_LABELS 1
+#define SELECTOR_CONTEXT_DESC   2
 
 struct selector_ctx {
-    struct mk_list rules;
     struct mk_list metrics_rules;
-    int logical_op;
+    flb_sds_t action;
+    int action_type;
+    int op_type;
+    int context_type;
+    char *selector_pattern;
+    struct flb_regex *name_regex;
     struct flb_processor_instance *ins;
     struct flb_config *config;
-};
-
-struct metrics_rule {
-    int type;
-    char *regex_pattern;
-    struct flb_regex *regex;
-    struct mk_list _head;
 };
 
 #endif

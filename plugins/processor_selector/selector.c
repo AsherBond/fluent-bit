@@ -39,16 +39,8 @@
 
 static void delete_metrics_rules(struct selector_ctx *ctx)
 {
-    struct mk_list *tmp;
-    struct mk_list *head;
-    struct metrics_rule *metrics_rule;
-
-    mk_list_foreach_safe(head, tmp, &ctx->metrics_rules) {
-        metrics_rule = mk_list_entry(head, struct metrics_rule, _head);
-        flb_free(metrics_rule->regex_pattern);
-        flb_regex_destroy(metrics_rule->regex);
-        mk_list_del(&metrics_rule->_head);
-        flb_free(metrics_rule);
+    if (ctx->name_regex != NULL) {
+        flb_regex_destroy(ctx->name_regex);
     }
 }
 
@@ -56,73 +48,83 @@ static void destroy_context(struct selector_ctx *context)
 {
     if (context != NULL) {
         delete_metrics_rules(context);
+        flb_free(context->selector_pattern);
         flb_free(context);
     }
 }
 
 static int set_metrics_rules(struct selector_ctx *ctx, struct flb_processor_instance *p_ins)
 {
-    int first_rule = SELECTOR_NO_RULE;
-    struct mk_list *head;
-    struct flb_kv *kv;
-    struct metrics_rule *metrics_rule;
+    const char *action;
+    const char *metric_name;
+    const char *op_type;
+    const char *context;
+    size_t name_len = 0;
 
-    /* Iterate all filter properties for metrics.regex and metrics.exclude */
-    mk_list_foreach(head, &p_ins->properties) {
-        kv = mk_list_entry(head, struct flb_kv, _head);
+    action = flb_processor_instance_get_property("action", p_ins);
+    if (action == NULL) {
+        ctx->action_type = SELECTOR_INCLUDE;
+    }
+    else if (strncasecmp(action, "include", 7) == 0) {
+        flb_plg_debug(ctx->ins, "action type INCLUDE");
+        ctx->action_type = SELECTOR_INCLUDE;
+    }
+    else if (strncasecmp(action, "exclude", 7) == 0) {
+        flb_plg_debug(ctx->ins, "action type EXCLUDE");
+        ctx->action_type = SELECTOR_EXCLUDE;
+    }
+    else {
+        flb_plg_error(ctx->ins, "unknown action type '%s'", action);
+        return -1;
+    }
 
-        /* Create a new rule */
-        metrics_rule = flb_malloc(sizeof(struct metrics_rule));
-        if (!metrics_rule) {
-            flb_errno();
-            return -1;
-        }
+    metric_name = flb_processor_instance_get_property("metric_name", p_ins);
+    if (metric_name == NULL) {
+        flb_plg_error(ctx->ins, "metric_name is needed for selector");
+        return -1;
+    }
+    ctx->selector_pattern = flb_strdup(metric_name);
+    name_len = strlen(metric_name);
 
-        /* Get the type */
-        if (strncasecmp(kv->key, "metrics.regex", 13) == 0) {
-            metrics_rule->type = SELECTOR_REGEX;
-        }
-        else if (strncasecmp(kv->key, "metrics.exclude", 15) == 0) {
-            metrics_rule->type = SELECTOR_EXCLUDE;
-        }
-        else {
-            /* Other property. Skip */
-            flb_free(metrics_rule);
-            continue;
-        }
+    op_type = flb_processor_instance_get_property("operation_type", p_ins);
+    if (op_type == NULL) {
+        ctx->op_type = SELECTOR_OPERATION_PREFIX;
+    }
+    else if (strncasecmp(op_type, "prefix", 6) == 0) {
+        flb_plg_debug(ctx->ins, "operation type PREFIX");
+        ctx->op_type = SELECTOR_OPERATION_PREFIX;
+    }
+    else if (strncasecmp(op_type, "substring", 9) == 0) {
+        flb_plg_debug(ctx->ins, "operation type SUBSTRING");
+        ctx->op_type = SELECTOR_OPERATION_SUBSTRING;
+    }
+    else {
+        flb_plg_error(ctx->ins, "unknown action type '%s'", op_type);
+        return -1;
+    }
 
-        if (ctx->logical_op != SELECTOR_LOGICAL_OP_LEGACY && first_rule != SELECTOR_NO_RULE) {
-            /* 'AND'/'OR' case */
-            if (first_rule != metrics_rule->type) {
-                flb_plg_error(ctx->ins, "Both 'metrics.regex' and 'metrics.exclude' are set.");
-                delete_metrics_rules(ctx);
-                flb_free(metrics_rule);
-                return -1;
-            }
-        }
-        first_rule = metrics_rule->type;
-
-        /* Get name (regular expression) */
-        metrics_rule->regex_pattern = flb_strndup(kv->val, strlen(kv->val));
-        if (metrics_rule->regex_pattern == NULL) {
-            flb_errno();
-            delete_metrics_rules(ctx);
-            flb_free(metrics_rule);
-            return -1;
-        }
-
+    if (ctx->selector_pattern[0] == '/' && ctx->selector_pattern[name_len-1] == '/') {
         /* Convert string to regex pattern for metrics */
-        metrics_rule->regex = flb_regex_create(metrics_rule->regex_pattern);
-        if (!metrics_rule->regex) {
+        ctx->name_regex = flb_regex_create(ctx->selector_pattern);
+        if (!ctx->name_regex) {
             flb_plg_error(ctx->ins, "could not compile regex pattern '%s'",
-                          metrics_rule->regex_pattern);
-            delete_metrics_rules(ctx);
-            flb_free(metrics_rule);
+                          ctx->selector_pattern);
             return -1;
         }
+        ctx->op_type = SELECTOR_OPERATION_REGEX;
+    }
 
-        /* Link to parent list */
-        mk_list_add(&metrics_rule->_head, &ctx->metrics_rules);
+    context = flb_processor_instance_get_property("context", p_ins);
+    if (context == NULL) {
+        ctx->context_type = SELECTOR_CONTEXT_FQNAME;
+    }
+    else if (strncasecmp(context, "metric_name", 11) == 0) {
+        ctx->context_type = SELECTOR_CONTEXT_FQNAME;
+    }
+    else {
+        flb_plg_error(ctx->ins, "unknown context '%s'", context);
+        delete_metrics_rules(ctx);
+        return -1;
     }
 
     return 0;
@@ -132,45 +134,21 @@ static struct selector_ctx *
         create_context(struct flb_processor_instance *processor_instance,
                        struct flb_config *config)
 {
-    int ret;
     int result;
-    size_t len;
-    const char *val;
     struct selector_ctx *ctx;
 
     ctx = flb_malloc(sizeof(struct selector_ctx));
     if (ctx != NULL) {
         ctx->ins = processor_instance;
         ctx->config = config;
-
-        mk_list_init(&ctx->metrics_rules);
+        ctx->name_regex = NULL;
 
         result = flb_processor_instance_config_map_set(processor_instance, (void *) ctx);
 
         if (result == 0) {
-            ctx->logical_op = SELECTOR_LOGICAL_OP_LEGACY;
-            val = flb_processor_instance_get_property("logical_op", processor_instance);
-            if (val != NULL) {
-                len = strlen(val);
-                if (len == 3 && strncasecmp("AND", val, len) == 0) {
-                    flb_plg_info(ctx->ins, "AND mode");
-                    ctx->logical_op = SELECTOR_LOGICAL_OP_AND;
-                }
-                else if (len == 2 && strncasecmp("OR", val, len) == 0) {
-                    flb_plg_info(ctx->ins, "OR mode");
-                    ctx->logical_op = SELECTOR_LOGICAL_OP_OR;
-                }
-                else if (len == 6 && strncasecmp("legacy", val, len) == 0) {
-                    flb_plg_info(ctx->ins, "legacy mode");
-                    ctx->logical_op = SELECTOR_LOGICAL_OP_LEGACY;
-                }
-            }
-        }
-
-        if (result == 0) {
             /* Load rules */
-            ret = set_metrics_rules(ctx, processor_instance);
-            if (ret == -1) {
+            result= set_metrics_rules(ctx, processor_instance);
+            if (result == -1) {
                 destroy_context(ctx);
                 ctx = NULL;
 
@@ -243,144 +221,57 @@ static int cmt_regex_exclude(void *ctx, const char *str, size_t slen)
     return ret;
 }
 
-static inline int selector_metrics_or_op(struct cmt *cmt, struct cmt *out_cmt, struct selector_ctx *ctx)
-{
-    ssize_t ret;
-    int found = FLB_FALSE;
-    struct mk_list *head;
-    struct metrics_rule *metrics_rule;
-    struct cmt *tmp = NULL;
-    struct cmt *filtered = NULL;
-
-    /* For each rule, validate against cmt context */
-    mk_list_foreach(head, &ctx->metrics_rules) {
-        found = FLB_FALSE;
-        metrics_rule = mk_list_entry(head, struct metrics_rule, _head);
-
-        tmp = cmt_create();
-        if (tmp == NULL) {
-            flb_plg_error(ctx->ins, "could not create tmp context");
-            return SELECTOR_FAILURE;
-        }
-        cmt_cat(tmp, cmt);
-        filtered = cmt_create();
-        if (filtered == NULL) {
-            flb_plg_error(ctx->ins, "could not create filtered context");
-            return SELECTOR_FAILURE;
-        }
-
-        if (metrics_rule->type == SELECTOR_REGEX) {
-            ret = cmt_filter(filtered, tmp, NULL, NULL, metrics_rule->regex, cmt_regex_match, 0);
-        }
-        else if (metrics_rule->type == SELECTOR_EXCLUDE) {
-            ret = cmt_filter(filtered, tmp, NULL, NULL, metrics_rule->regex, cmt_regex_exclude, 0);
-        }
-        if (ret == 0) {
-            found = FLB_TRUE;
-        }
-
-        if (found == FLB_TRUE) {
-            cmt_cat(out_cmt, filtered);
-        }
-        cmt_destroy(tmp);
-        cmt_destroy(filtered);
-    }
-
-    if (metrics_rule->type == SELECTOR_REGEX) {
-        return found ? SELECTOR_RET_KEEP : SELECTOR_RET_EXCLUDE;
-    }
-
-    /* The last rule is exclude */
-    return found ? SELECTOR_RET_EXCLUDE : SELECTOR_RET_KEEP;
-}
-
-
-static inline int selector_metrics_and_op(struct cmt *cmt, struct cmt *out_cmt,
-                                          struct selector_ctx *ctx)
+static inline int selector_metrics_process_fqname(struct cmt *cmt, struct cmt *out_cmt,
+                                                  struct selector_ctx *ctx)
 {
     int ret;
     int found = FLB_FALSE;
-    struct mk_list *head;
-    struct metrics_rule *metrics_rule;
-    struct cmt *tmp = NULL;
-    struct cmt *swap = NULL;
     struct cmt *filtered = NULL;
-    size_t rule_size;
-    int count = 1;
-    rule_size = mk_list_size(&ctx->metrics_rules);
+    int flags = 0;
 
-    /* For each rule, validate against cmt context */
-    mk_list_foreach(head, &ctx->metrics_rules) {
-        found = FLB_FALSE;
-        metrics_rule = mk_list_entry(head, struct metrics_rule, _head);
-        if (tmp == NULL) {
-            tmp = cmt_create();
-            if (tmp == NULL) {
-                flb_plg_error(ctx->ins, "could not create tmp context");
-                return SELECTOR_FAILURE;
-            }
-            cmt_cat(tmp, cmt);
-        }
-        filtered = cmt_create();
-        if (filtered == NULL) {
-            flb_plg_error(ctx->ins, "could not create filtered context");
-            cmt_destroy(tmp);
+    /* On processor_selector, we only process one rule in each of contexts */
 
-            return SELECTOR_FAILURE;
-        }
+    filtered = cmt_create();
+    if (filtered == NULL) {
+        flb_plg_error(ctx->ins, "could not create filtered context");
 
-        if (metrics_rule->type == SELECTOR_REGEX) {
-            ret = cmt_filter(filtered, tmp, NULL, NULL, metrics_rule->regex, cmt_regex_match, 0);
-        }
-        else if (metrics_rule->type == SELECTOR_EXCLUDE) {
-            ret = cmt_filter(filtered, tmp, NULL, NULL, metrics_rule->regex, cmt_regex_exclude, 0);
-        }
-
-        if (ret == 0) {
-            found = FLB_TRUE;
-        }
-        else if (ret != 0) {
-            flb_plg_debug(ctx->ins, "not matched for rule = \"%s\"", metrics_rule->regex_pattern);
-        }
-
-        if (count >= rule_size) {
-            /* When tmp has a reference of swap, we just need to
-             * destroy swap instance here. */
-            if (swap != NULL) {
-                cmt_destroy(swap);
-                swap = NULL;
-            }
-            else {
-                cmt_destroy(tmp);
-            }
-            cmt_cat(out_cmt, filtered);
-            cmt_destroy(filtered);
-
-            goto selector_metrics_and_or_end;
-        }
-
-        if (filtered != NULL && tmp != NULL) {
-            if (swap != NULL) {
-                cmt_destroy(swap);
-                swap = NULL;
-            }
-            swap = cmt_create();
-            if (swap == NULL) {
-                flb_plg_error(ctx->ins, "could not create swap context");
-                return SELECTOR_FAILURE;
-            }
-            cmt_cat(swap, filtered);
-            cmt_destroy(tmp);
-            cmt_destroy(filtered);
-            tmp = NULL;
-            tmp = swap;
-        }
-        count++;
+        return SELECTOR_FAILURE;
     }
 
- selector_metrics_and_or_end:
+    if (ctx->op_type == SELECTOR_OPERATION_REGEX) {
+        if (ctx->action_type == SELECTOR_INCLUDE) {
+            ret = cmt_filter(filtered, cmt, NULL, NULL, ctx->name_regex, cmt_regex_match, 0);
+        }
+        else if (ctx->action_type == SELECTOR_EXCLUDE) {
+            ret = cmt_filter(filtered, cmt, NULL, NULL, ctx->name_regex, cmt_regex_exclude, 0);
+        }
+    }
+    else if (ctx->selector_pattern != NULL) {
+        if (ctx->action_type == SELECTOR_EXCLUDE) {
+            flags |= CMT_FILTER_EXCLUDE;
+        }
 
-    if (metrics_rule->type == SELECTOR_REGEX) {
+        if (ctx->op_type == SELECTOR_OPERATION_PREFIX) {
+            flags |= CMT_FILTER_PREFIX;
+        }
+        else if (ctx->op_type == SELECTOR_OPERATION_SUBSTRING) {
+            flags |= CMT_FILTER_SUBSTRING;
+        }
+
+        ret = cmt_filter(filtered, cmt, ctx->selector_pattern, NULL, NULL, NULL, flags);
+    }
+
+    if (ret == 0) {
+        found = FLB_TRUE;
+    }
+    else if (ret != 0) {
+        flb_plg_debug(ctx->ins, "not matched for rule = \"%s\"", ctx->selector_pattern);
+    }
+
+    cmt_cat(out_cmt, filtered);
+    cmt_destroy(filtered);
+
+    if (ctx->action_type == SELECTOR_INCLUDE) {
         return found ? SELECTOR_RET_KEEP : SELECTOR_RET_EXCLUDE;
     }
 
@@ -392,22 +283,11 @@ static inline int selector_metrics_and_op(struct cmt *cmt, struct cmt *out_cmt,
 static inline int selector_metrics(struct cmt *cmt, struct cmt *out_cmt,
                                    struct selector_ctx *ctx)
 {
-    return selector_metrics_and_op(cmt, out_cmt, ctx);
-}
-
-static inline int selector_metrics_and_or(struct cmt *cmt, struct cmt *out_cmt,
-                                          struct selector_ctx *ctx)
-{
-    ssize_t ret;
-
-    if (ctx->logical_op == SELECTOR_LOGICAL_OP_OR) {
-        ret = selector_metrics_or_op(cmt, out_cmt, ctx);
-    }
-    else if (ctx->logical_op == SELECTOR_LOGICAL_OP_AND) {
-        ret = selector_metrics_and_op(cmt, out_cmt, ctx);
+    if (ctx->context_type == SELECTOR_CONTEXT_FQNAME) {
+        return selector_metrics_process_fqname(cmt, out_cmt, ctx);
     }
 
-    return ret;
+    return 0;
 }
 
 static int process_metrics(struct flb_processor_instance *processor_instance,
@@ -428,12 +308,7 @@ static int process_metrics(struct flb_processor_instance *processor_instance,
         return SELECTOR_FAILURE;
     }
 
-    if (ctx->logical_op == SELECTOR_LOGICAL_OP_LEGACY) {
-        ret = selector_metrics(metrics_context, out_cmt, ctx);
-    }
-    else {
-        ret = selector_metrics_and_or(metrics_context, out_cmt, ctx);
-    }
+    ret = selector_metrics(metrics_context, out_cmt, ctx);
 
     if (ret == SELECTOR_RET_KEEP || ret == SELECTOR_RET_EXCLUDE) {
         ret = SELECTOR_SUCCESS;
@@ -484,21 +359,25 @@ static int cb_selector_exit(struct flb_processor_instance *processor_instance)
 
 static struct flb_config_map config_map[] = {
     {
-     FLB_CONFIG_MAP_STR, "metrics.regex", NULL,
+     FLB_CONFIG_MAP_STR, "metric_name", NULL,
      FLB_CONFIG_MAP_MULT, FLB_FALSE, 0,
-     "Keep metrics in which the metric of name matches the regular expression."
+     "Keep metrics in which the metric of name matches with the actual name or the regular expression."
     },
     {
-     FLB_CONFIG_MAP_STR, "metrics.exclude", NULL,
+     FLB_CONFIG_MAP_STR, "context", NULL,
      FLB_CONFIG_MAP_MULT, FLB_FALSE, 0,
-     "Exclude metrics in which the metric of name matches the regular expression."
+     "Specify matching context. Currently, metric_name is only supported."
     },
     {
-     FLB_CONFIG_MAP_STR, "logical_op", "legacy",
+     FLB_CONFIG_MAP_STR, "action", NULL,
      0, FLB_FALSE, 0,
-     "Specify whether to use logical conjuciton or disjunction. legacy, AND and OR are allowed."
+     "Specify the action for specified metrics. INCLUDE and EXCLUDE are allowed."
     },
-    /* EOF */
+    {
+     FLB_CONFIG_MAP_STR, "operation_type", NULL,
+     0, FLB_FALSE, 0,
+     "Specify the operation type of action for metrics payloads. PREFIX and SUBSTRING are allowed."
+    },    /* EOF */
     {0}
 };
 
